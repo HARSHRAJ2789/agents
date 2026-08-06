@@ -163,6 +163,21 @@ type SandboxUpgradePolicy struct {
 	// +kubebuilder:validation:Enum=Recreate;CheckpointRestore
 	// +optional
 	Type SandboxUpgradePolicyType `json:"type,omitempty"`
+
+	// SkipInitializeOnResume skips the post-resume Initialize call (runtime
+	// re-init, security token re-issue, CSI re-mount) on the old pod during
+	// the Resuming stage of an upgrade. The new pod created in the UpgradePod
+	// step is always initialized regardless of this flag.
+	//
+	// Set this to true when the old pod does not need runtime/CSI/token
+	// initialization before being deleted — e.g., no preUpgrade hook depends
+	// on the runtime, or CheckpointRestore does not require a live runtime.
+	// This avoids wasted initialization on a pod that is about to be replaced.
+	//
+	// Caution: if a preUpgrade hook is configured and depends on the runtime
+	// being initialized, setting this to true may cause the hook to fail.
+	// +optional
+	SkipInitializeOnResume bool `json:"skipInitializeOnResume,omitempty"`
 }
 
 // PauseStrategyType enumerates the supported pause strategies.
@@ -379,19 +394,19 @@ const (
 	SandboxInplaceUpdateReasonFailed          = "Failed"
 
 	// SandboxConditionUpgrading Reason
-	SandboxUpgradingReasonResuming          = "Resuming"
-	SandboxUpgradingReasonPreUpgrade        = "PreUpgrade"
-	SandboxUpgradingReasonUpgradePod        = "UpgradePod"
-	SandboxUpgradingReasonPostUpgrade       = "PostUpgrade"
-	SandboxUpgradingReasonPreUpgradeFailed  = "PreUpgradeFailed"
-	SandboxUpgradingReasonPostUpgradeFailed = "PostUpgradeFailed"
-	SandboxUpgradingReasonSucceeded         = "Succeeded"
-	SandboxUpgradingReasonUpgradePodFailed  = "UpgradePodFailed"
-
+	SandboxUpgradingReasonResuming         = "Resuming"
+	SandboxUpgradingReasonResumeSucceed    = "ResumeSucceed"
+	SandboxUpgradingReasonPreUpgrade       = "PreUpgrade"
+	SandboxUpgradingReasonPreUpgradeFailed = "PreUpgradeFailed"
 	// SandboxUpgradingReasonCheckpointing indicates a checkpoint is being created before pod deletion.
 	SandboxUpgradingReasonCheckpointing = "Checkpointing"
 	// SandboxUpgradingReasonCheckpointFailed indicates the checkpoint creation failed during upgrade.
-	SandboxUpgradingReasonCheckpointFailed = "CheckpointFailed"
+	SandboxUpgradingReasonCheckpointFailed  = "CheckpointFailed"
+	SandboxUpgradingReasonUpgradePod        = "UpgradePod"
+	SandboxUpgradingReasonUpgradePodFailed  = "UpgradePodFailed"
+	SandboxUpgradingReasonPostUpgrade       = "PostUpgrade"
+	SandboxUpgradingReasonPostUpgradeFailed = "PostUpgradeFailed"
+	SandboxUpgradingReasonSucceeded         = "Succeeded"
 
 	// SandboxConditionPaused Reason
 	SandboxPausedReasonPausing             = "Pausing"

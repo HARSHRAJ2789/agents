@@ -19,6 +19,7 @@ package core
 import (
 	"context"
 	"fmt"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -107,7 +108,7 @@ func RequiresPodReplacementUpgrade(box *agentsv1alpha1.Sandbox) bool {
 //
 // The state transitions are:
 //
-//	Resuming → PreUpgrade → Checkpointing → UpgradePod → PostUpgrade → Succeeded
+//	Resuming → ResumeSucceed → PreUpgrade → Checkpointing → UpgradePod → PostUpgrade → Succeeded
 //
 // Each reconcile cycle processes exactly one state and returns nil so the
 // controller can persist the updated condition before re-entering the next
@@ -173,8 +174,14 @@ func (r *UpgradeControl) EnsureSandboxUpgraded(ctx context.Context, args EnsureF
 			klog.InfoS("Sandbox is still pausing, waiting before upgrade", "sandbox", klog.KObj(box))
 			return nil
 		}
-		// Sandbox is paused, trigger resume.
-		r.recordUpgradeEvent(box, corev1.EventTypeNormal, EventUpgradeResuming, "Resuming paused sandbox for upgrade")
+		// Record the resume event only on the first entry into Resuming;
+		// subsequent reconciles see a non-empty Message and skip the
+		// duplicate event while waiting for pod readiness.
+		if upgradeCond.Message == "" {
+			r.recordUpgradeEvent(box, corev1.EventTypeNormal, EventUpgradeResuming, "Resuming paused sandbox for upgrade")
+			upgradeCond.Message = "Resume triggered, waiting for pod readiness"
+			utils.SetSandboxCondition(newStatus, *upgradeCond)
+		}
 		if err := r.resumeFunc(ctx, args); err != nil {
 			return err
 		}
@@ -196,18 +203,31 @@ func (r *UpgradeControl) EnsureSandboxUpgraded(ctx context.Context, args EnsureF
 			klog.InfoS("Waiting for pod ready before initialization", "sandbox", klog.KObj(box))
 			return nil
 		}
-		if err := r.initializer.Initialize(ctx, box, newStatus); err != nil {
+		// SkipInitializeOnResume allows users to skip the post-resume Initialize
+		// call (runtime re-init, security token, CSI re-mount) on the old pod
+		// that is about to be deleted in the UpgradePod step. The new pod
+		// created in performRecreateUpgrade is always initialized regardless.
+		if box.Spec.UpgradePolicy != nil && box.Spec.UpgradePolicy.SkipInitializeOnResume {
+			klog.InfoS("Skipping Initialize on resume due to SkipInitializeOnResume", "sandbox", klog.KObj(box))
+		} else if err := r.initializer.Initialize(ctx, box, newStatus); err != nil {
 			return err
 		}
 		r.syncStatusFromPod(pod, newStatus, false)
-		// Resume succeeded, transition to PreUpgrade.
-		klog.InfoS("Sandbox resumed successfully, transitioning to PreUpgrade", "sandbox", klog.KObj(box))
-		r.recordUpgradeEvent(box, corev1.EventTypeNormal, EventUpgradeResumed, "Sandbox resumed, proceeding with upgrade")
-		upgradeCond.Reason = agentsv1alpha1.SandboxUpgradingReasonPreUpgrade
+		// Resume succeeded. Transition to ResumeSucceed and wait for
+		// SandboxUpdateOps to patch the template before proceeding.
+		klog.InfoS("Sandbox resumed successfully, waiting for template patch", "sandbox", klog.KObj(box))
+		r.recordUpgradeEvent(box, corev1.EventTypeNormal, EventUpgradeResumed, "Sandbox resumed, waiting for template patch")
+		upgradeCond.Reason = agentsv1alpha1.SandboxUpgradingReasonResumeSucceed
 		upgradeCond.Message = ""
 		utils.SetSandboxCondition(newStatus, *upgradeCond)
 		utils.RemoveSandboxCondition(newStatus, string(agentsv1alpha1.SandboxConditionPaused))
-		fallthrough
+		return nil
+	// ResumeSucceed is a transient waiting state. When the template is
+	// patched, calculateStatus detects the hash change and calls
+	// determineUpgradeResumeReason to transition to PreUpgrade.
+	case agentsv1alpha1.SandboxUpgradingReasonResumeSucceed:
+		klog.InfoS("Waiting for template patch after resume", "sandbox", klog.KObj(box))
+		return nil
 	case agentsv1alpha1.SandboxUpgradingReasonPreUpgrade, agentsv1alpha1.SandboxUpgradingReasonPreUpgradeFailed:
 		// Execute preUpgrade if configured
 		if hasUpgradeAction(box, true) {
@@ -358,7 +378,10 @@ func (r *UpgradeControl) performRecreateUpgrade(ctx context.Context, args Ensure
 
 	// Step 2: Create new Pod (old pod deleted)
 	if pod == nil {
-		klog.InfoS("Creating new pod for upgrade", "sandbox", klog.KObj(box))
+		klog.InfoS("Creating new pod for upgrade, waiting 1s to mitigate VK status reporting issues", "sandbox", klog.KObj(box))
+		// Wait 1 second before creating the pod to mitigate status
+		// reporting issues caused by the virtual kubelet.
+		time.Sleep(time.Second)
 		// Both Recreate and CheckpointRestore render the new pod from the current
 		// template, so the runtime HTTPS capability of the new pod matches the
 		// current injection configuration and the stamp is accurate.

@@ -208,6 +208,21 @@ spec:
               upgradePolicy:
                 description: UpgradePolicy defines the upgrade strategy for the sandbox.
                 properties:
+                  skipInitializeOnResume:
+                    description: |-
+                      SkipInitializeOnResume skips the post-resume Initialize call (runtime
+                      re-init, security token re-issue, CSI re-mount) on the old pod during
+                      the Resuming stage of an upgrade. The new pod created in the UpgradePod
+                      step is always initialized regardless of this flag.
+
+                      Set this to true when the old pod does not need runtime/CSI/token
+                      initialization before being deleted — e.g., no preUpgrade hook depends
+                      on the runtime, or CheckpointRestore does not require a live runtime.
+                      This avoids wasted initialization on a pod that is about to be replaced.
+
+                      Caution: if a preUpgrade hook is configured and depends on the runtime
+                      being initialized, setting this to true may cause the hook to fail.
+                    type: boolean
                   type:
                     description: |-
                       Type specifies the upgrade policy type.
