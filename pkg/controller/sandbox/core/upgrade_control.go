@@ -170,7 +170,21 @@ func (r *UpgradeControl) EnsureSandboxUpgraded(ctx context.Context, args EnsureF
 	// ResumeSucceed is a transient waiting state. When the template is
 	// patched, calculateStatus detects the hash change and calls
 	// determineUpgradeResumeReason to transition to PreUpgrade.
+	//
+	// Abandonment: if the resume trigger annotation has been removed (e.g.,
+	// ops was deleted during the phase-1→phase-2 window) and the template
+	// was not patched (UpdateRevision unchanged), abandon the upgrade and
+	// return to Running. The sandbox already resumed successfully — it just
+	// never received the template patch. With no ops to drive phase 2,
+	// staying in ResumeSucceed would block forever.
 	case agentsv1alpha1.SandboxUpgradingReasonResumeSucceed:
+		if box.Annotations[agentsv1alpha1.AnnotationUpgradeResumeTrigger] != agentsv1alpha1.True &&
+			newStatus.UpdateRevision == box.Status.UpdateRevision {
+			klog.InfoS("Resume trigger annotation removed before template patch, abandoning upgrade", "sandbox", klog.KObj(box))
+			utils.RemoveSandboxCondition(newStatus, string(agentsv1alpha1.SandboxConditionUpgrading))
+			newStatus.Phase = agentsv1alpha1.SandboxRunning
+			return nil
+		}
 		klog.InfoS("Waiting for template patch after resume", "sandbox", klog.KObj(box))
 		return nil
 	case agentsv1alpha1.SandboxUpgradingReasonPreUpgrade, agentsv1alpha1.SandboxUpgradingReasonPreUpgradeFailed:

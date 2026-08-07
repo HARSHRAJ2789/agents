@@ -579,6 +579,62 @@ func TestEnsureSandboxUpgraded(t *testing.T) {
 				string(agentsv1alpha1.SandboxConditionUpgrading): metav1.ConditionFalse,
 			},
 		},
+		{
+			name: "ResumeSucceed with annotation removed and revision unchanged -> abandon to Running",
+			pod:  newRunningPod(),
+			box: func() *agentsv1alpha1.Sandbox {
+				b := newUpgradeTestSandbox(nil, nil)
+				b.Status.UpdateRevision = "same-revision"
+				return b
+			}(),
+			existingStatus: &agentsv1alpha1.SandboxStatus{
+				Phase:          agentsv1alpha1.SandboxUpgrading,
+				UpdateRevision: "same-revision",
+				Conditions: []metav1.Condition{
+					{
+						Type:               string(agentsv1alpha1.SandboxConditionUpgrading),
+						Status:             metav1.ConditionFalse,
+						Reason:             agentsv1alpha1.SandboxUpgradingReasonResumeSucceed,
+						LastTransitionTime: now,
+					},
+				},
+			},
+			mockHookFunc: mockLifecycleHookFunc(0, "", "", nil),
+			expectErr:    false,
+			expectPhase:  agentsv1alpha1.SandboxRunning,
+			expectCondition: map[string]metav1.ConditionStatus{
+				string(agentsv1alpha1.SandboxConditionReady): metav1.ConditionFalse,
+			},
+		},
+		{
+			name: "ResumeSucceed with annotation present stays Upgrading",
+			pod:  newRunningPod(),
+			box: func() *agentsv1alpha1.Sandbox {
+				b := newUpgradeTestSandbox(nil, nil)
+				b.Status.UpdateRevision = "same-revision"
+				b.Annotations[agentsv1alpha1.AnnotationUpgradeResumeTrigger] = agentsv1alpha1.True
+				return b
+			}(),
+			existingStatus: &agentsv1alpha1.SandboxStatus{
+				Phase:          agentsv1alpha1.SandboxUpgrading,
+				UpdateRevision: "same-revision",
+				Conditions: []metav1.Condition{
+					{
+						Type:               string(agentsv1alpha1.SandboxConditionUpgrading),
+						Status:             metav1.ConditionFalse,
+						Reason:             agentsv1alpha1.SandboxUpgradingReasonResumeSucceed,
+						LastTransitionTime: now,
+					},
+				},
+			},
+			mockHookFunc: mockLifecycleHookFunc(0, "", "", nil),
+			expectErr:    false,
+			expectPhase:  agentsv1alpha1.SandboxUpgrading,
+			expectCondition: map[string]metav1.ConditionStatus{
+				string(agentsv1alpha1.SandboxConditionUpgrading): metav1.ConditionFalse,
+				string(agentsv1alpha1.SandboxConditionReady):     metav1.ConditionFalse,
+			},
+		},
 	}
 
 	for _, tt := range tests {

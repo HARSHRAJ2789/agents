@@ -679,6 +679,30 @@ func TestClassifySandbox(t *testing.T) {
 			},
 			expected: sandboxResumeSucceed,
 		},
+		{
+			// Phase 1 labeled the sandbox but it resumed normally (user set
+			// spec.Paused=false before reaching ResumeSucceed). No Upgrading
+			// condition was set, template still doesn't match, sandbox is
+			// Running. Should be routed to resumeSucceed so phase 2 applies
+			// the template patch.
+			name: "ops label + no condition + template differs + Running -> resumeSucceed (lost paused state)",
+			sandbox: &agentsv1alpha1.Sandbox{
+				ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{
+					agentsv1alpha1.LabelSandboxUpdateOps: opsName,
+				}},
+				Spec: agentsv1alpha1.SandboxSpec{
+					EmbeddedSandboxTemplate: agentsv1alpha1.EmbeddedSandboxTemplate{
+						Template: &corev1.PodTemplateSpec{
+							Spec: corev1.PodSpec{
+								Containers: []corev1.Container{{Name: "main", Image: "busybox:1.0"}},
+							},
+						},
+					},
+				},
+				Status: agentsv1alpha1.SandboxStatus{Phase: agentsv1alpha1.SandboxRunning},
+			},
+			expected: sandboxResumeSucceed,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1502,9 +1526,11 @@ func TestHandleDeletion_Success(t *testing.T) {
 	ops := newSandboxUpdateOps("test-ops", "default", agentsv1alpha1.SandboxUpdateOpsUpdating, false, nil)
 	ops.Finalizers = []string{finalizerName}
 
-	// Create 2 sandboxes with ops label
+	// Create 2 sandboxes with ops label and resume trigger annotation
 	sbx1 := newSandbox("sbx-1", "default", "test-ops", agentsv1alpha1.SandboxRunning, nil)
+	sbx1.Annotations = map[string]string{agentsv1alpha1.AnnotationUpgradeResumeTrigger: agentsv1alpha1.True}
 	sbx2 := newSandbox("sbx-2", "default", "test-ops", agentsv1alpha1.SandboxRunning, nil)
+	sbx2.Annotations = map[string]string{agentsv1alpha1.AnnotationUpgradeResumeTrigger: agentsv1alpha1.True}
 
 	r := newTestReconciler(ops, sbx1, sbx2)
 
@@ -1519,16 +1545,18 @@ func TestHandleDeletion_Success(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, ctrl.Result{}, result)
 
-	// Verify sandbox labels were removed
+	// Verify sandbox labels and annotations were removed
 	updatedSbx1 := &agentsv1alpha1.Sandbox{}
 	err = r.Get(context.Background(), types.NamespacedName{Name: "sbx-1", Namespace: "default"}, updatedSbx1)
 	assert.NoError(t, err)
 	assert.Empty(t, updatedSbx1.Labels[agentsv1alpha1.LabelSandboxUpdateOps])
+	assert.Empty(t, updatedSbx1.Annotations[agentsv1alpha1.AnnotationUpgradeResumeTrigger])
 
 	updatedSbx2 := &agentsv1alpha1.Sandbox{}
 	err = r.Get(context.Background(), types.NamespacedName{Name: "sbx-2", Namespace: "default"}, updatedSbx2)
 	assert.NoError(t, err)
 	assert.Empty(t, updatedSbx2.Labels[agentsv1alpha1.LabelSandboxUpdateOps])
+	assert.Empty(t, updatedSbx2.Annotations[agentsv1alpha1.AnnotationUpgradeResumeTrigger])
 
 	// After finalizer removal, fake client fully deletes the object
 	updatedOps := &agentsv1alpha1.SandboxUpdateOps{}
@@ -2265,7 +2293,7 @@ func TestReconcile_Phase2PatchPausedOpsSkipsPhase2(t *testing.T) {
 	assert.True(t, exists, "resume trigger annotation should remain when ops is paused")
 }
 
-func TestIsStateIncluded_DefaultIncludesPaused(t *testing.T) {
+func TestIsStateIncluded_DefaultExcludesPaused(t *testing.T) {
 	tests := []struct {
 		name     string
 		ops      *agentsv1alpha1.SandboxUpdateOps
@@ -2279,10 +2307,10 @@ func TestIsStateIncluded_DefaultIncludesPaused(t *testing.T) {
 			expected: true,
 		},
 		{
-			name:     "nil StateFilter, Paused -> true",
+			name:     "nil StateFilter, Paused -> false (not included by default)",
 			ops:      &agentsv1alpha1.SandboxUpdateOps{},
 			phase:    agentsv1alpha1.SandboxPaused,
-			expected: true,
+			expected: false,
 		},
 		{
 			name:     "nil StateFilter, Pending -> false",
@@ -2307,14 +2335,14 @@ func TestIsStateIncluded_DefaultIncludesPaused(t *testing.T) {
 			expected: true,
 		},
 		{
-			name: "empty States, Paused -> true",
+			name: "empty States, Paused -> false (not included by default)",
 			ops: &agentsv1alpha1.SandboxUpdateOps{
 				Spec: agentsv1alpha1.SandboxUpdateOpsSpec{
 					StateFilter: &agentsv1alpha1.UpgradeStateFilter{},
 				},
 			},
 			phase:    agentsv1alpha1.SandboxPaused,
-			expected: true,
+			expected: false,
 		},
 		{
 			name: "States=[Running], Paused -> false",

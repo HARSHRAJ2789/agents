@@ -195,22 +195,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	// the template patch + annotation removal to proceed with the actual upgrade.
 	var patchErr error
 	if newStatus.Phase == agentsv1alpha1.SandboxUpdateOpsUpdating && !ops.Spec.Paused {
-		for i := range resumeSucceedCandidates {
-			sbx := resumeSucceedCandidates[i]
-			klog.InfoS("Applying template patch (phase 2)", "sandbox", klog.KObj(sbx), "ops", klog.KObj(ops))
-			if err := r.applyTemplatePatch(ctx, sbx, ops); err != nil {
-				klog.ErrorS(err, "Failed to apply template patch (phase 2)",
-					"sandbox", klog.KObj(sbx), "ops", klog.KObj(ops))
-				r.Recorder.Eventf(ops, v1.EventTypeWarning, "PatchFailed",
-					"Failed to patch sandbox %s: %v", sbx.Name, err)
-				if patchErr == nil {
-					patchErr = err
-				}
-			} else {
-				r.Recorder.Eventf(ops, v1.EventTypeNormal, "SandboxUpgrading",
-					"Patching sandbox %s (phase 2)", sbx.Name)
-			}
-		}
+		patchErr = r.patchResumeSucceedSandboxes(ctx, resumeSucceedCandidates, ops)
 	}
 
 	// Only initiate new upgrades when in Updating phase, not paused, and there are candidates
@@ -248,11 +233,35 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	return ctrl.Result{}, nil
 }
 
+// patchResumeSucceedSandboxes applies template patches (phase 2) to sandboxes
+// that have already resumed with the old template. Returns the first error
+// encountered, if any.
+func (r *Reconciler) patchResumeSucceedSandboxes(ctx context.Context, candidates []*agentsv1alpha1.Sandbox, ops *agentsv1alpha1.SandboxUpdateOps) error {
+	var patchErr error
+	for _, sbx := range candidates {
+		klog.InfoS("Applying template patch (phase 2)", "sandbox", klog.KObj(sbx), "ops", klog.KObj(ops))
+		if err := r.applyTemplatePatch(ctx, sbx, ops); err != nil {
+			klog.ErrorS(err, "Failed to apply template patch (phase 2)",
+				"sandbox", klog.KObj(sbx), "ops", klog.KObj(ops))
+			r.Recorder.Eventf(ops, v1.EventTypeWarning, "PatchFailed",
+				"Failed to patch sandbox %s: %v", sbx.Name, err)
+			if patchErr == nil {
+				patchErr = err
+			}
+		} else {
+			r.Recorder.Eventf(ops, v1.EventTypeNormal, "SandboxUpgrading",
+				"Patching sandbox %s after resuming", sbx.Name)
+		}
+	}
+	return patchErr
+}
+
 // isStateIncluded checks whether the given sandbox phase is among the states
 // eligible as upgrade candidates. Upgrading is always implicitly included,
 // because sandboxes already being upgraded by this ops must be tracked
 // regardless of the StateFilter configuration. When StateFilter is nil or
-// has no States, Running and Paused are the default eligible states.
+// has no States, only Running is eligible by default — Paused sandboxes
+// require an explicit StateFilter to avoid breaking existing installations.
 func isStateIncluded(ops *agentsv1alpha1.SandboxUpdateOps, phase agentsv1alpha1.SandboxPhase) bool {
 	if phase == agentsv1alpha1.SandboxUpgrading {
 		return true
@@ -262,7 +271,7 @@ func isStateIncluded(ops *agentsv1alpha1.SandboxUpdateOps, phase agentsv1alpha1.
 		states = ops.Spec.StateFilter.States
 	}
 	if len(states) == 0 {
-		return phase == agentsv1alpha1.SandboxRunning || phase == agentsv1alpha1.SandboxPaused
+		return phase == agentsv1alpha1.SandboxRunning
 	}
 	for _, s := range states {
 		if s == phase {
@@ -432,6 +441,14 @@ func (r *Reconciler) classifySandbox(ctx context.Context, sbx *agentsv1alpha1.Sa
 		return sandboxNoNeedUpdate
 	}
 
+	// Phase 1 labeled the sandbox but it resumed normally (e.g., user set
+	// spec.Paused=false before reaching ResumeSucceed). The template was
+	// never patched, so route it back to the template patching path so
+	// applyTemplatePatch can apply the template in phase 2.
+	if cond == nil && sbx.Status.Phase == agentsv1alpha1.SandboxRunning {
+		return sandboxResumeSucceed
+	}
+
 	// Phase 2 of two-phase upgrade: resume succeeded, now ready for template
 	// patch. The sandbox controller resumed with the OLD template; ops must
 	// now patch the template and remove the resume trigger annotation to
@@ -514,22 +531,25 @@ func (r *Reconciler) handleDeletion(ctx context.Context, ops *agentsv1alpha1.San
 		return ctrl.Result{}, err
 	}
 
-	// Remove ops label from each sandbox
+	// Remove ops label and resume trigger annotation from each sandbox.
+	// The annotation must be cleaned up so that a stale trigger does not
+	// fire the two-phase upgrade flow again after the ops is gone.
 	for i := range sandboxList.Items {
 		sbx := &sandboxList.Items[i]
 		if sbx.Labels[agentsv1alpha1.LabelSandboxUpdateOps] != ops.Name {
 			continue
 		}
-		patchJSON := fmt.Sprintf(`{"metadata":{"labels":{"%s":null}}}`, agentsv1alpha1.LabelSandboxUpdateOps)
+		patchJSON := fmt.Sprintf(`{"metadata":{"labels":{"%s":null},"annotations":{"%s":null}}}`,
+			agentsv1alpha1.LabelSandboxUpdateOps, agentsv1alpha1.AnnotationUpgradeResumeTrigger)
 		rcvObject := &agentsv1alpha1.Sandbox{
 			ObjectMeta: metav1.ObjectMeta{Namespace: sbx.Namespace, Name: sbx.Name},
 		}
 		if err := r.Patch(ctx, rcvObject, client.RawPatch(types.MergePatchType, []byte(patchJSON))); err != nil {
-			klog.ErrorS(err, "Failed to remove ops label from sandbox",
+			klog.ErrorS(err, "Failed to remove ops label and annotation from sandbox",
 				"sandbox", klog.KObj(sbx), "ops", klog.KObj(ops))
 			return ctrl.Result{}, err
 		}
-		klog.InfoS("Removed ops label from sandbox",
+		klog.InfoS("Removed ops label and annotation from sandbox",
 			"sandbox", klog.KObj(sbx), "ops", klog.KObj(ops))
 	}
 
