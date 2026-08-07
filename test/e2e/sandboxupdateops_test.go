@@ -1215,6 +1215,9 @@ var _ = Describe("SandboxUpdateOps E2E", func() {
 					Selector: &metav1.LabelSelector{
 						MatchLabels: map[string]string{batchLabel: labelValue},
 					},
+					StateFilter: &agentsv1alpha1.UpgradeStateFilter{
+						States: []agentsv1alpha1.SandboxPhase{agentsv1alpha1.SandboxRunning},
+					},
 					Patch: mustMarshalPatch(corev1.PodTemplateSpec{
 						Spec: corev1.PodSpec{
 							Containers: []corev1.Container{
@@ -1225,7 +1228,7 @@ var _ = Describe("SandboxUpdateOps E2E", func() {
 				},
 			}
 			Expect(k8sClient.Create(ctx, ops)).To(Succeed())
-			klog.InfoS("Created SandboxUpdateOps", "name", ops.Name)
+			klog.InfoS("Created SandboxUpdateOps with StateFilter=[Running]", "name", ops.Name)
 
 			By("Waiting for Ops to reach Completed")
 			waitOpsPhase(ops, agentsv1alpha1.SandboxUpdateOpsCompleted, 3*time.Minute)
