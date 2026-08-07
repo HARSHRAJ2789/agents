@@ -242,7 +242,10 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if err := r.updateStatus(ctx, ops, newStatus); err != nil {
 		return ctrl.Result{}, err
 	}
-	return ctrl.Result{}, patchErr
+	if patchErr != nil {
+		return ctrl.Result{}, patchErr
+	}
+	return ctrl.Result{}, nil
 }
 
 // isStateIncluded checks whether the given sandbox phase is among the states
@@ -378,22 +381,17 @@ func (r *Reconciler) classifySandbox(ctx context.Context, sbx *agentsv1alpha1.Sa
 		if !isStateIncluded(ops, sbx.Status.Phase) {
 			return sandboxNoNeedUpdate
 		}
-		// Skip paused sandboxes that are not fully paused yet or are about
-		// to resume. The two-phase upgrade requires a fully paused sandbox
-		// (Paused condition=True and spec.Paused=true) so the annotation
-		// trigger is processed correctly by the sandbox controller.
-		// When the sandbox is in a transient state (pause in progress or
-		// resume triggered), return sandboxUpdating instead of
-		// sandboxNoNeedUpdate so the ops stays in Updating phase and
-		// requeues when the sandbox status changes. Returning NoNeedUpdate
-		// here would cause the ops to be marked Completed prematurely.
+		// Only a fully paused sandbox (Paused condition=True and
+		// spec.Paused=true) is ready for the two-phase upgrade.
+		// Other transient states (pause in progress, resume triggered)
+		// are not ready yet — return NoNeedUpdate to skip them.
 		if sbx.Status.Phase == agentsv1alpha1.SandboxPaused {
 			pausedCond := findCondition(sbx.Status.Conditions, string(agentsv1alpha1.SandboxConditionPaused))
 			if pausedCond == nil || pausedCond.Status != metav1.ConditionTrue {
-				return sandboxUpdating
+				return sandboxNoNeedUpdate
 			}
 			if !sbx.Spec.Paused {
-				return sandboxUpdating
+				return sandboxNoNeedUpdate
 			}
 		}
 		return sandboxCandidate

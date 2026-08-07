@@ -1270,10 +1270,18 @@ var _ = Describe("SandboxUpdateOps E2E", func() {
 			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(sbx), sbx)).To(Succeed())
 			sbx.Spec.Paused = true
 			Expect(k8sClient.Update(ctx, sbx)).To(Succeed())
-			Eventually(func() agentsv1alpha1.SandboxPhase {
+			Eventually(func() bool {
 				_ = k8sClient.Get(ctx, client.ObjectKeyFromObject(sbx), sbx)
-				return sbx.Status.Phase
-			}, 30*time.Second, 500*time.Millisecond).Should(Equal(agentsv1alpha1.SandboxPaused))
+				if sbx.Status.Phase != agentsv1alpha1.SandboxPaused {
+					return false
+				}
+				for _, c := range sbx.Status.Conditions {
+					if c.Type == string(agentsv1alpha1.SandboxConditionPaused) {
+						return c.Status == metav1.ConditionTrue
+					}
+				}
+				return false
+			}, 30*time.Second, 500*time.Millisecond).Should(BeTrue())
 			klog.InfoS("Sandbox is Paused", "name", sbx.Name)
 
 			By("Creating SandboxUpdateOps with StateFilter=[Running,Paused]")
@@ -1333,10 +1341,18 @@ var _ = Describe("SandboxUpdateOps E2E", func() {
 			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(sbx), sbx)).To(Succeed())
 			sbx.Spec.Paused = true
 			Expect(k8sClient.Update(ctx, sbx)).To(Succeed())
-			Eventually(func() agentsv1alpha1.SandboxPhase {
+			Eventually(func() bool {
 				_ = k8sClient.Get(ctx, client.ObjectKeyFromObject(sbx), sbx)
-				return sbx.Status.Phase
-			}, 30*time.Second, 500*time.Millisecond).Should(Equal(agentsv1alpha1.SandboxPaused))
+				if sbx.Status.Phase != agentsv1alpha1.SandboxPaused {
+					return false
+				}
+				for _, c := range sbx.Status.Conditions {
+					if c.Type == string(agentsv1alpha1.SandboxConditionPaused) {
+						return c.Status == metav1.ConditionTrue
+					}
+				}
+				return false
+			}, 30*time.Second, 500*time.Millisecond).Should(BeTrue())
 			klog.InfoS("Sandbox is Paused", "name", sbx.Name)
 
 			By("Creating SandboxUpdateOps with StateFilter=[Running,Paused]")

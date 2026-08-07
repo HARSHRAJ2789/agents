@@ -19,7 +19,6 @@ package core
 import (
 	"context"
 	"fmt"
-	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -389,10 +388,12 @@ func (r *UpgradeControl) performRecreateUpgrade(ctx context.Context, args Ensure
 
 	// Step 2: Create new Pod (old pod deleted)
 	if pod == nil {
-		klog.InfoS("Creating new pod for upgrade, waiting 1s to mitigate VK status reporting issues", "sandbox", klog.KObj(box))
-		// Wait 1 second before creating the pod to mitigate status
-		// reporting issues caused by the virtual kubelet.
-		time.Sleep(time.Second)
+		// TODO: The virtual kubelet may have status reporting delays after
+		// pod deletion. Previously a blocking time.Sleep(1s) was used here
+		// to mitigate this. It is removed to avoid blocking the reconcile
+		// loop. If VK status issues resurface, consider adding a requeue
+		// delay or an annotation-based gate before pod creation.
+		klog.InfoS("Creating new pod for upgrade", "sandbox", klog.KObj(box))
 		// Both Recreate and CheckpointRestore render the new pod from the current
 		// template, so the runtime HTTPS capability of the new pod matches the
 		// current injection configuration and the stamp is accurate.
