@@ -325,12 +325,12 @@ func (r *Reconciler) classifySandboxes(ctx context.Context, sandboxList *agentsv
 type sandboxUpdateState int
 
 const (
-	sandboxCandidate       sandboxUpdateState = iota // not yet started
-	sandboxUpdating                                  // upgrading in progress
-	sandboxUpdated                                   // upgrade completed
-	sandboxFailed                                    // upgrade failed
-	sandboxNoNeedUpdate                              // template already matches patch, skip entirely
-	sandboxResumeSucceed                             // resume succeeded, ready for template patch (phase 2)
+	sandboxCandidate     sandboxUpdateState = iota // not yet started
+	sandboxUpdating                                // upgrading in progress
+	sandboxUpdated                                 // upgrade completed
+	sandboxFailed                                  // upgrade failed
+	sandboxNoNeedUpdate                            // template already matches patch, skip entirely
+	sandboxResumeSucceed                           // resume succeeded, ready for template patch (phase 2)
 )
 
 func (s sandboxUpdateState) String() string {

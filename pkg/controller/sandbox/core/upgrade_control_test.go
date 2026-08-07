@@ -1698,7 +1698,7 @@ func TestEnsureSandboxUpgraded_Resuming(t *testing.T) {
 			expectReason:       agentsv1alpha1.SandboxUpgradingReasonResuming,
 		},
 		{
-			name: "Resuming with Paused=True, Resumed=True, PodReady=True, Initialize succeeds - transitions to PreUpgrade and removes Paused",
+			name: "Resuming with Paused=True, Resumed=True, PodReady=True, Initialize succeeds - transitions to ResumeSucceed and removes Paused",
 			pod:  readyPod(),
 			box:  baseBox(),
 			existingStatus: &agentsv1alpha1.SandboxStatus{
@@ -1713,7 +1713,7 @@ func TestEnsureSandboxUpgraded_Resuming(t *testing.T) {
 			expectResumeCalled:  true,
 			expectInitCalled:    true,
 			expectErr:           false,
-			expectReason:        agentsv1alpha1.SandboxUpgradingReasonUpgradePod,
+			expectReason:        agentsv1alpha1.SandboxUpgradingReasonResumeSucceed,
 			expectPausedRemoved: true,
 		},
 	}
