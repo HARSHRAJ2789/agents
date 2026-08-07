@@ -382,13 +382,18 @@ func (r *Reconciler) classifySandbox(ctx context.Context, sbx *agentsv1alpha1.Sa
 		// to resume. The two-phase upgrade requires a fully paused sandbox
 		// (Paused condition=True and spec.Paused=true) so the annotation
 		// trigger is processed correctly by the sandbox controller.
+		// When the sandbox is in a transient state (pause in progress or
+		// resume triggered), return sandboxUpdating instead of
+		// sandboxNoNeedUpdate so the ops stays in Updating phase and
+		// requeues when the sandbox status changes. Returning NoNeedUpdate
+		// here would cause the ops to be marked Completed prematurely.
 		if sbx.Status.Phase == agentsv1alpha1.SandboxPaused {
 			pausedCond := findCondition(sbx.Status.Conditions, string(agentsv1alpha1.SandboxConditionPaused))
 			if pausedCond == nil || pausedCond.Status != metav1.ConditionTrue {
-				return sandboxNoNeedUpdate
+				return sandboxUpdating
 			}
 			if !sbx.Spec.Paused {
-				return sandboxNoNeedUpdate
+				return sandboxUpdating
 			}
 		}
 		return sandboxCandidate

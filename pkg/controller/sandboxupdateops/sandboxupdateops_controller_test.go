@@ -486,7 +486,7 @@ func TestClassifySandbox(t *testing.T) {
 			expected: sandboxCandidate,
 		},
 		{
-			name: "no ops label, template differs, Paused -> noNeedUpdate",
+			name: "no ops label, template differs, Paused -> updating (transient, pause not complete)",
 			sandbox: &agentsv1alpha1.Sandbox{
 				ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{}},
 				Spec: agentsv1alpha1.SandboxSpec{
@@ -500,7 +500,7 @@ func TestClassifySandbox(t *testing.T) {
 				},
 				Status: agentsv1alpha1.SandboxStatus{Phase: agentsv1alpha1.SandboxPaused},
 			},
-			expected: sandboxNoNeedUpdate,
+			expected: sandboxUpdating,
 		},
 		{
 			name: "no ops label, template differs, Resuming -> noNeedUpdate",
@@ -1033,7 +1033,7 @@ func TestClassifySandbox_StateFilter(t *testing.T) {
 			expected: sandboxNoNeedUpdate,
 		},
 		{
-			name: "StateFilter=[Running,Paused], Paused phase, no Paused condition -> noNeedUpdate",
+			name: "StateFilter=[Running,Paused], Paused phase, no Paused condition -> updating (transient)",
 			sandbox: &agentsv1alpha1.Sandbox{
 				ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{}},
 				Spec: agentsv1alpha1.SandboxSpec{
@@ -1048,10 +1048,10 @@ func TestClassifySandbox_StateFilter(t *testing.T) {
 				},
 				Status: agentsv1alpha1.SandboxStatus{Phase: agentsv1alpha1.SandboxPaused},
 			},
-			expected: sandboxNoNeedUpdate,
+			expected: sandboxUpdating,
 		},
 		{
-			name: "StateFilter=[Running,Paused], Paused phase, condition=False -> noNeedUpdate",
+			name: "StateFilter=[Running,Paused], Paused phase, condition=False -> updating (transient)",
 			sandbox: &agentsv1alpha1.Sandbox{
 				ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{}},
 				Spec: agentsv1alpha1.SandboxSpec{
@@ -1071,10 +1071,10 @@ func TestClassifySandbox_StateFilter(t *testing.T) {
 					},
 				},
 			},
-			expected: sandboxNoNeedUpdate,
+			expected: sandboxUpdating,
 		},
 		{
-			name: "StateFilter=[Running,Paused], Paused phase, spec.Paused=false -> noNeedUpdate",
+			name: "StateFilter=[Running,Paused], Paused phase, spec.Paused=false -> updating (transient, resume in progress)",
 			sandbox: &agentsv1alpha1.Sandbox{
 				ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{}},
 				Spec: agentsv1alpha1.SandboxSpec{
@@ -1094,7 +1094,7 @@ func TestClassifySandbox_StateFilter(t *testing.T) {
 					},
 				},
 			},
-			expected: sandboxNoNeedUpdate,
+			expected: sandboxUpdating,
 		},
 	}
 	for _, tt := range tests {
