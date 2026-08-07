@@ -337,14 +337,16 @@ func (r *UpgradeControl) handleResuming(ctx context.Context, args EnsureFuncArgs
 		klog.InfoS("Waiting for pod ready before initialization", "sandbox", klog.KObj(box))
 		return nil
 	}
-	// SkipInitializeOnResume allows users to skip the post-resume Initialize
-	// call (runtime re-init, security token, CSI re-mount) on the old pod
-	// that is about to be deleted in the UpgradePod step. The new pod
-	// created in performRecreateUpgrade is always initialized regardless.
-	if box.Spec.UpgradePolicy != nil && box.Spec.UpgradePolicy.SkipInitializeOnResume {
-		klog.InfoS("Skipping Initialize on resume due to SkipInitializeOnResume", "sandbox", klog.KObj(box))
-	} else if err := r.initializer.Initialize(ctx, box, newStatus); err != nil {
-		return err
+	// Only initialize the old pod when a PreUpgrade hook is configured.
+	// The Initialize call (runtime re-init, security token, CSI re-mount)
+	// prepares the old pod for PreUpgrade execution. If no PreUpgrade hook
+	// is configured, the old pod is about to be deleted in the UpgradePod
+	// step, so initializing it would be wasted work. The new pod created
+	// in performRecreateUpgrade is always initialized regardless.
+	if hasUpgradeAction(box, true) {
+		if err := r.initializer.Initialize(ctx, box, newStatus); err != nil {
+			return err
+		}
 	}
 	r.syncStatusFromPod(pod, newStatus, false)
 	// Resume succeeded. Transition to ResumeSucceed and wait for

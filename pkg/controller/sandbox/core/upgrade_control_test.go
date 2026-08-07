@@ -1545,6 +1545,18 @@ func TestEnsureSandboxUpgraded_Resuming(t *testing.T) {
 		}
 	}
 
+	// boxWithPreUpgrade returns a sandbox with a PreUpgrade lifecycle hook,
+	// which causes the controller to call Initialize during the Resuming stage.
+	boxWithPreUpgrade := func() *agentsv1alpha1.Sandbox {
+		box := baseBox()
+		box.Spec.Lifecycle = &agentsv1alpha1.SandboxLifecycle{
+			PreUpgrade: &agentsv1alpha1.UpgradeAction{
+				Exec: &corev1.ExecAction{Command: []string{"/bin/echo", "pre"}},
+			},
+		}
+		return box
+	}
+
 	pausedTrueCond := metav1.Condition{
 		Type:               string(agentsv1alpha1.SandboxConditionPaused),
 		Status:             metav1.ConditionTrue,
@@ -1681,7 +1693,7 @@ func TestEnsureSandboxUpgraded_Resuming(t *testing.T) {
 		{
 			name: "Resuming with Paused=True, Resumed=True, PodReady=True, Initialize fails",
 			pod:  readyPod(),
-			box:  baseBox(),
+			box:  boxWithPreUpgrade(),
 			existingStatus: &agentsv1alpha1.SandboxStatus{
 				Phase: agentsv1alpha1.SandboxUpgrading,
 				Conditions: []metav1.Condition{
@@ -1700,7 +1712,7 @@ func TestEnsureSandboxUpgraded_Resuming(t *testing.T) {
 		{
 			name: "Resuming with Paused=True, Resumed=True, PodReady=True, Initialize succeeds - transitions to ResumeSucceed and removes Paused",
 			pod:  readyPod(),
-			box:  baseBox(),
+			box:  boxWithPreUpgrade(),
 			existingStatus: &agentsv1alpha1.SandboxStatus{
 				Phase: agentsv1alpha1.SandboxUpgrading,
 				Conditions: []metav1.Condition{
@@ -1712,6 +1724,25 @@ func TestEnsureSandboxUpgraded_Resuming(t *testing.T) {
 			resumeSetResumed:    true,
 			expectResumeCalled:  true,
 			expectInitCalled:    true,
+			expectErr:           false,
+			expectReason:        agentsv1alpha1.SandboxUpgradingReasonResumeSucceed,
+			expectPausedRemoved: true,
+		},
+		{
+			name: "Resuming with Paused=True, Resumed=True, PodReady=True, no PreUpgrade hook - skips Initialize, transitions to ResumeSucceed",
+			pod:  readyPod(),
+			box:  baseBox(),
+			existingStatus: &agentsv1alpha1.SandboxStatus{
+				Phase: agentsv1alpha1.SandboxUpgrading,
+				Conditions: []metav1.Condition{
+					resumingCond,
+					pausedTrueCond,
+					resumedTrueCond,
+				},
+			},
+			resumeSetResumed:    true,
+			expectResumeCalled:  true,
+			expectInitCalled:    false,
 			expectErr:           false,
 			expectReason:        agentsv1alpha1.SandboxUpgradingReasonResumeSucceed,
 			expectPausedRemoved: true,

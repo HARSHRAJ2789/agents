@@ -106,8 +106,7 @@ func (r *Reconciler) applySandboxPatch(ctx context.Context, sbx *agentsv1alpha1.
 		policyType = agentsv1alpha1.SandboxUpgradePolicyCheckpointRestore
 	}
 	modified.Spec.UpgradePolicy = &agentsv1alpha1.SandboxUpgradePolicy{
-		Type:                   policyType,
-		SkipInitializeOnResume: ops.Spec.UpdateStrategy.SkipInitializeOnResume,
+		Type: policyType,
 	}
 
 	// Set Lifecycle

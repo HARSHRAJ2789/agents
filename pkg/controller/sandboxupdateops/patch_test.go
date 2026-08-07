@@ -350,53 +350,6 @@ func TestApplySandboxPatch_PausedSetsResumeTriggerAnnotation(t *testing.T) {
 	assert.Equal(t, agentsv1alpha1.SandboxUpgradePolicyRecreate, updated.Spec.UpgradePolicy.Type)
 }
 
-func TestApplySandboxPatch_SkipInitializeOnResume(t *testing.T) {
-	ops := &agentsv1alpha1.SandboxUpdateOps{
-		ObjectMeta: metav1.ObjectMeta{Name: "ops-1", Namespace: "default"},
-		Spec: agentsv1alpha1.SandboxUpdateOpsSpec{
-			Patch: mustMarshalPatch(corev1.PodTemplateSpec{
-				Spec: corev1.PodSpec{
-					Containers: []corev1.Container{
-						{Name: "main", Image: "nginx:2.0"},
-					},
-				},
-			}),
-			UpdateStrategy: agentsv1alpha1.SandboxUpdateOpsStrategy{
-				SkipInitializeOnResume: true,
-			},
-		},
-	}
-	sbx := &agentsv1alpha1.Sandbox{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "sbx-1",
-			Namespace: "default",
-			Labels:    map[string]string{"app": "test"},
-		},
-		Spec: agentsv1alpha1.SandboxSpec{
-			EmbeddedSandboxTemplate: agentsv1alpha1.EmbeddedSandboxTemplate{
-				Template: &corev1.PodTemplateSpec{
-					Spec: corev1.PodSpec{
-						Containers: []corev1.Container{
-							{Name: "main", Image: "nginx:1.0"},
-						},
-					},
-				},
-			},
-		},
-		Status: agentsv1alpha1.SandboxStatus{Phase: agentsv1alpha1.SandboxPaused},
-	}
-
-	r := newTestReconciler(sbx)
-	err := r.applySandboxPatch(context.Background(), sbx, ops)
-	assert.NoError(t, err)
-
-	updated := &agentsv1alpha1.Sandbox{}
-	err = r.Get(context.Background(), types.NamespacedName{Name: "sbx-1", Namespace: "default"}, updated)
-	assert.NoError(t, err)
-	assert.NotNil(t, updated.Spec.UpgradePolicy)
-	assert.True(t, updated.Spec.UpgradePolicy.SkipInitializeOnResume)
-}
-
 func TestApplyTemplatePatch_Success(t *testing.T) {
 	ops := &agentsv1alpha1.SandboxUpdateOps{
 		ObjectMeta: metav1.ObjectMeta{Name: "ops-1", Namespace: "default"},
