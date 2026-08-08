@@ -284,7 +284,21 @@ func isStateIncluded(ops *agentsv1alpha1.SandboxUpdateOps, phase agentsv1alpha1.
 func (r *Reconciler) classifySandboxes(ctx context.Context, sandboxList *agentsv1alpha1.SandboxList, ops *agentsv1alpha1.SandboxUpdateOps) (updated, failed, updating int32, candidates, resumeSucceedCandidates []*agentsv1alpha1.Sandbox, requeueResult *ctrl.Result) {
 	for i := range sandboxList.Items {
 		sbx := &sandboxList.Items[i]
-		if !sbx.DeletionTimestamp.IsZero() || !isStateIncluded(ops, sbx.Status.Phase) {
+		if !sbx.DeletionTimestamp.IsZero() {
+			continue
+		}
+		// Terminal phases (Succeeded/Failed) are always excluded — these
+		// sandboxes have completed their lifecycle and cannot be upgraded.
+		if sbx.Status.Phase == agentsv1alpha1.SandboxSucceeded ||
+			sbx.Status.Phase == agentsv1alpha1.SandboxFailed {
+			continue
+		}
+		// The state filter only gates new candidates. A sandbox already claimed by
+		// this ops must stay tracked regardless of its phase (e.g. Resuming after
+		// a user un-pause mid two-phase upgrade), otherwise the ops could complete
+		// while the sandbox is still pending its template patch.
+		if sbx.Labels[agentsv1alpha1.LabelSandboxUpdateOps] != ops.Name &&
+			!isStateIncluded(ops, sbx.Status.Phase) {
 			continue
 		}
 
@@ -390,10 +404,11 @@ func (r *Reconciler) classifySandbox(ctx context.Context, sbx *agentsv1alpha1.Sa
 		if !isStateIncluded(ops, sbx.Status.Phase) {
 			return sandboxNoNeedUpdate
 		}
-		// Only a fully paused sandbox (Paused condition=True and
-		// spec.Paused=true) is ready for the two-phase upgrade.
-		// Other transient states (pause in progress, resume triggered)
-		// are not ready yet — return NoNeedUpdate to skip them.
+		// Only a fully paused sandbox (Paused condition=True with
+		// spec.Paused=true) can enter the two-phase upgrade. Transient
+		// states — pause still in progress, or an un-pause already
+		// requested — are skipped here; the sandbox will be picked up by a
+		// later reconcile once it stabilizes.
 		if sbx.Status.Phase == agentsv1alpha1.SandboxPaused {
 			pausedCond := findCondition(sbx.Status.Conditions, string(agentsv1alpha1.SandboxConditionPaused))
 			if pausedCond == nil || pausedCond.Status != metav1.ConditionTrue {
@@ -410,50 +425,45 @@ func (r *Reconciler) classifySandbox(ctx context.Context, sbx *agentsv1alpha1.Sa
 		return sandboxUpdating
 	}
 
-	// Only Upgrading Condition Reason == Succeeded means upgrade completed
 	cond := findCondition(sbx.Status.Conditions, string(agentsv1alpha1.SandboxConditionUpgrading))
-	if cond != nil && cond.Reason == agentsv1alpha1.SandboxUpgradingReasonSucceeded && cond.Status == metav1.ConditionTrue {
-		return sandboxUpdated
-	}
-
-	// Explicit failure: check Upgrading condition for failed reasons
-	if cond != nil && cond.Status == metav1.ConditionFalse &&
-		(cond.Reason == agentsv1alpha1.SandboxUpgradingReasonPreUpgradeFailed ||
-			cond.Reason == agentsv1alpha1.SandboxUpgradingReasonPostUpgradeFailed ||
-			cond.Reason == agentsv1alpha1.SandboxUpgradingReasonUpgradePodFailed ||
-			cond.Reason == agentsv1alpha1.SandboxUpgradingReasonCheckpointFailed) {
-		return sandboxFailed
+	if cond != nil {
+		// Terminal: upgrade completed
+		if cond.Reason == agentsv1alpha1.SandboxUpgradingReasonSucceeded && cond.Status == metav1.ConditionTrue {
+			return sandboxUpdated
+		}
+		// Terminal: upgrade failed
+		if cond.Status == metav1.ConditionFalse &&
+			(cond.Reason == agentsv1alpha1.SandboxUpgradingReasonPreUpgradeFailed ||
+				cond.Reason == agentsv1alpha1.SandboxUpgradingReasonPostUpgradeFailed ||
+				cond.Reason == agentsv1alpha1.SandboxUpgradingReasonUpgradePodFailed ||
+				cond.Reason == agentsv1alpha1.SandboxUpgradingReasonCheckpointFailed) {
+			return sandboxFailed
+		}
+		// Non-terminal: resume succeeded, waiting for phase 2 template patch.
+		// Reconcile applies the patch and removes the resume trigger annotation,
+		// which kicks off the actual pod-replacement upgrade.
+		if cond.Reason == agentsv1alpha1.SandboxUpgradingReasonResumeSucceed {
+			return sandboxResumeSucceed
+		}
 	}
 
 	// Patched by ops but never entered upgrade flow — template already matched.
-	// For Running sandboxes this can happen when an in-place update was applied
-	// without setting the Upgrading condition, so NoNeedUpdate is correct.
-	// For Paused sandboxes the pod was deleted during pause, so the template
-	// change can only take effect through the upgrade flow (pod replacement).
-	// If the Upgrading condition is still absent, the sandbox controller has
-	// not yet detected the change (e.g., still waiting for the pause to
-	// complete), so we must keep tracking it as Updating rather than
-	// short-circuiting to NoNeedUpdate.
+	// The controller has already observed this spec (Generation ==
+	// ObservedGeneration), and no Upgrading condition was set, so the
+	// template change was applied without the upgrade flow. NoNeedUpdate
+	// is correct for all phases.
 	if cond == nil && isSandboxTemplateMatchPatch(sbx, ops) {
-		if sbx.Status.Phase == agentsv1alpha1.SandboxPaused {
-			return sandboxUpdating
-		}
 		return sandboxNoNeedUpdate
 	}
 
-	// Phase 1 labeled the sandbox but it resumed normally (e.g., user set
-	// spec.Paused=false before reaching ResumeSucceed). The template was
-	// never patched, so route it back to the template patching path so
-	// applyTemplatePatch can apply the template in phase 2.
+	// The sandbox is labeled by this updateops and Running, yet it never entered
+	// the upgrade flow (no Upgrading condition) and its template still
+	// differs from the patch target. This happens when phase 1 set only the
+	// resume trigger and the sandbox was un-paused (spec.Paused=false)
+	// before it reached ResumeSucceed, so the template patch was never
+	// applied. Treat it as resume-succeeded so Reconcile applies the
+	// pending template patch.
 	if cond == nil && sbx.Status.Phase == agentsv1alpha1.SandboxRunning {
-		return sandboxResumeSucceed
-	}
-
-	// Phase 2 of two-phase upgrade: resume succeeded, now ready for template
-	// patch. The sandbox controller resumed with the OLD template; ops must
-	// now patch the template and remove the resume trigger annotation to
-	// proceed with the actual pod replacement.
-	if cond != nil && cond.Reason == agentsv1alpha1.SandboxUpgradingReasonResumeSucceed {
 		return sandboxResumeSucceed
 	}
 

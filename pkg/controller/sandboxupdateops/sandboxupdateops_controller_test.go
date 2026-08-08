@@ -612,7 +612,7 @@ func TestClassifySandbox(t *testing.T) {
 			expected: sandboxUpdating,
 		},
 		{
-			name: "ops label + Paused phase + no condition + template matches -> updating (upgrade not started yet)",
+			name: "ops label + Paused phase + no condition + template matches -> noNeedUpdate",
 			sandbox: &agentsv1alpha1.Sandbox{
 				ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{
 					agentsv1alpha1.LabelSandboxUpdateOps: opsName,
@@ -628,10 +628,10 @@ func TestClassifySandbox(t *testing.T) {
 				},
 				Status: agentsv1alpha1.SandboxStatus{Phase: agentsv1alpha1.SandboxPaused},
 			},
-			expected: sandboxUpdating,
+			expected: sandboxNoNeedUpdate,
 		},
 		{
-			name: "ops label + Paused phase + no condition + template matches (Paused=True) -> updating",
+			name: "ops label + Paused phase + no condition + template matches (Paused=True) -> noNeedUpdate",
 			sandbox: &agentsv1alpha1.Sandbox{
 				ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{
 					agentsv1alpha1.LabelSandboxUpdateOps: opsName,
@@ -652,7 +652,7 @@ func TestClassifySandbox(t *testing.T) {
 					},
 				},
 			},
-			expected: sandboxUpdating,
+			expected: sandboxNoNeedUpdate,
 		},
 		{
 			name: "ops label + Pending phase (no condition, no template) -> updating (intermediate)",
@@ -2409,6 +2409,80 @@ func TestIsStateIncluded_DefaultExcludesPaused(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			result := isStateIncluded(tt.ops, tt.phase)
 			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+func TestReconcile_LabeledSandboxInIntermediatePhaseStaysTracked(t *testing.T) {
+	// Regression test: a sandbox already claimed by this ops (has the ops label)
+	// that transits through an intermediate phase not in the StateFilter (e.g.
+	// Resuming after a user un-pause mid two-phase upgrade) must stay tracked.
+	// Otherwise the ops could complete while the sandbox is still pending its
+	// template patch.
+	tests := []struct {
+		name             string
+		opsLabel         string
+		phase            agentsv1alpha1.SandboxPhase
+		expectedOpsPhase agentsv1alpha1.SandboxUpdateOpsPhase
+		expectedReplicas int32
+		expectedUpdating int32
+	}{
+		{
+			name:             "labeled + Resuming -> stays Updating",
+			opsLabel:         "test-ops",
+			phase:            agentsv1alpha1.SandboxResuming,
+			expectedOpsPhase: agentsv1alpha1.SandboxUpdateOpsUpdating,
+			expectedReplicas: 1,
+			expectedUpdating: 1,
+		},
+		{
+			name:             "labeled + Pending -> stays Updating",
+			opsLabel:         "test-ops",
+			phase:            agentsv1alpha1.SandboxPending,
+			expectedOpsPhase: agentsv1alpha1.SandboxUpdateOpsUpdating,
+			expectedReplicas: 1,
+			expectedUpdating: 1,
+		},
+		{
+			name:             "unlabeled + Resuming -> filtered out, ops completes",
+			opsLabel:         "",
+			phase:            agentsv1alpha1.SandboxResuming,
+			expectedOpsPhase: agentsv1alpha1.SandboxUpdateOpsCompleted,
+			expectedReplicas: 0,
+			expectedUpdating: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ops := newSandboxUpdateOps("test-ops", "default", agentsv1alpha1.SandboxUpdateOpsUpdating, false, nil)
+			ops.Spec.StateFilter = &agentsv1alpha1.UpgradeStateFilter{
+				States: []agentsv1alpha1.SandboxPhase{
+					agentsv1alpha1.SandboxRunning,
+					agentsv1alpha1.SandboxPaused,
+				},
+			}
+			ops.Spec.Patch = mustMarshalPatch(corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{Name: "main", Image: "busybox:2.0"},
+					},
+				},
+			})
+			sbx := newSandbox("sbx-1", "default", tt.opsLabel, tt.phase, nil)
+			r := newTestReconciler(ops, sbx)
+
+			_, err := r.Reconcile(context.Background(), ctrl.Request{
+				NamespacedName: types.NamespacedName{Name: "test-ops", Namespace: "default"},
+			})
+			assert.NoError(t, err)
+
+			updatedOps := &agentsv1alpha1.SandboxUpdateOps{}
+			err = r.Get(context.Background(), types.NamespacedName{Name: "test-ops", Namespace: "default"}, updatedOps)
+			assert.NoError(t, err)
+			assert.Equal(t, tt.expectedOpsPhase, updatedOps.Status.Phase)
+			assert.Equal(t, tt.expectedReplicas, updatedOps.Status.Replicas)
+			assert.Equal(t, tt.expectedUpdating, updatedOps.Status.UpdatingReplicas)
 		})
 	}
 }
