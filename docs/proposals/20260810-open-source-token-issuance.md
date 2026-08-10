@@ -338,10 +338,52 @@ The in-tree issuer is selected by configuration, not by replacing `defaultTokenP
 unconditionally. A deployment that already registers an enterprise provider through
 `RegisterProvider` is unaffected.
 
-Upgrade sequence for an operator adopting signed tokens: create the signing Secret, enable
-the discovery listener, point `OIDC_DISCOVERY_URL` and the CA ConfigMap at it, roll the
-gateway, then set `enable-jwt-auth` on sandboxes one at a time. Rollback is the reverse, and
-is safe at every step because the annotation is per-sandbox.
+### The annotation is not a gradual rollout control
+
+`enable-jwt-auth` appears twice with different scopes, and the interaction between them
+means neither ordering of a phased migration is safe. This section previously described
+enabling the annotation sandbox by sandbox as a gradual rollout. That is wrong, and the
+correction matters more than the issuance design it sits next to.
+
+The gateway filter config carries process-wide `EnableAuth` and `EnableJWTAuth` flags,
+with `Validate()` requiring `EnableAuth` whenever `EnableJWTAuth` is set
+(`filter/config.go:58-62`, `:82`). Separately, each route carries `RequireTrafficAuth`,
+derived per sandbox from the annotation (`proxyutils/route.go:41`). `authenticate()`
+(`filter/filter.go:141-160`) combines them:
+
+| Gateway `EnableJWTAuth` | Sandbox annotation | Behaviour |
+|---|---|---|
+| off | off | UUID constant-time compare, when `EnableAuth` is set and the route has a token |
+| off | **on** | **503** `jwt_verifier_not_ready` (`filter.go:143-144`) |
+| on | on | JWT verification |
+| on | **off** | **Traffic token header deleted, `Continue` returned** (`filter.go:148-151`) |
+
+The two mixed states are the problem, in opposite directions.
+
+Annotating sandboxes before flipping the gateway takes each one offline as it is annotated:
+the route now requires traffic auth, the gateway has no verifier, and every request gets a
+503 until the flip.
+
+Flipping the gateway before annotating is worse, because it fails open rather than closed.
+A route without `RequireTrafficAuth` never reaches the constant-time compare at
+`filter.go:159`. Its traffic token header is stripped and the request continues
+unauthenticated. Sandboxes that were UUID-authenticated a moment earlier are not
+authenticated at all, and nothing in the request path logs it.
+
+So the migration is a per-process cutover, not a per-sandbox one. The supported sequence is
+to prepare issuance first (signing Secret, discovery listener, `OIDC_DISCOVERY_URL` and the
+CA ConfigMap), then move a gateway and the sandboxes routed through it together, either by
+annotating and flipping in one operation or by standing up a second gateway fleet already in
+JWT mode and shifting routes onto it. Rollback carries the same constraint in reverse.
+
+This proposal does not change that behaviour, which belongs to #648 as merged. It documents
+it, because an operator following the earlier version of this section would have created
+either an outage or an authentication gap. Whether `authenticate()` should instead fall back
+to the UUID compare when JWT mode is on and a route has not opted in is a question for
+@furykerry and @zmberg; it would make a phased rollout possible and is a change to the
+verification contract rather than to issuance.
+
+Reported by @AnshulPatil2005 on #659.
 
 ## Test Plan
 
