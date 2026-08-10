@@ -212,6 +212,30 @@ at boot instead of a gateway that silently never becomes ready.
 @AnshulPatil2005 hit this while building #772 and reported it on this proposal; the fix
 there is the same one described here.
 
+### Issuer URL and path handling
+
+`NewVerifier` fetches `discovery.JWKSURI` as an absolute URL, after checking only that it
+is absolute HTTPS (`verifier.go`, `validateHTTPSURL`). Whatever the discovery document
+advertises is therefore the exact URL that must be served.
+
+That makes one deployment shape a silent trap. If the issuer is reached through an ingress
+path prefix, and the implementation mounts its handlers at the root while advertising
+`jwks_uri` at the root, the advertised URL does not resolve to the served path and JWKS
+fetch fails with a 404. Combined with the retry loop above, the gateway does not fail
+loudly: it stays unready and keeps retrying forever, which is the worst version of this
+bug to diagnose in production.
+
+So the issuer MUST derive every advertised URL from the configured issuer URL including
+its path, and mount its handlers under that same path. A conformance test should assert
+that discovery served under a path prefix advertises a `jwks_uri` under the same prefix,
+and that a verifier built against it bootstraps.
+
+This failure mode was reported by @AnshulPatil2005, who hit it while building #772 and
+fixed it there by mounting under the issuer URL's own path. I reproduced it against the
+real verifier before writing this section: a discovery document advertising a root
+`jwks_uri` while the mux serves under `/identity` fails with
+`fetch OIDC JWKS: unexpected HTTP status 404 Not Found`.
+
 ### Bootstrap ordering
 
 Serving discovery from sandbox-manager makes gateway readiness depend on sandbox-manager
