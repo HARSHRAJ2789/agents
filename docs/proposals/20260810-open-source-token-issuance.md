@@ -210,9 +210,8 @@ JWKS through the advertised URLs turns this class of misconfiguration into a fas
 at boot instead of a gateway that silently never becomes ready.
 
 @AnshulPatil2005 hit this while building #772 and reported it on this proposal; the fix
-there is the same one described here. Reproduced against the real verifier before this
-section was written: a discovery document advertising a root `jwks_uri` while the mux
-serves under `/identity` fails with
+there is the same one described here. Reproduced against the real verifier: a discovery
+document advertising a root `jwks_uri` while the mux serves under `/identity` fails with
 `fetch OIDC JWKS: unexpected HTTP status 404 Not Found`.
 
 ### Bootstrap ordering
