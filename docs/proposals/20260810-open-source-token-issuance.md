@@ -188,6 +188,30 @@ an Infra capability exposed upward as a neutral interface, and the signing logic
 
 A separate identity component was considered and is discussed under Alternatives.
 
+### Path mounting
+
+The advertised `jwks_uri` and the path the mux actually serves must agree, and there is a
+deployment shape where the obvious implementation makes them disagree.
+
+`NewVerifier` validates `discovery.JWKSURI` as an absolute HTTPS URL and then fetches that
+URL verbatim (`verifier.go:121-126`). It performs no relative resolution and never joins the
+path against the issuer. So an issuer that composes `jwks_uri` as `issuer + "/jwks"` while
+mounting its handlers at the root is correct only when the issuer URL has an empty path.
+Put the same listener behind an ingress path prefix, for example
+`https://host/identity`, and the discovery document advertises
+`https://host/identity/jwks` while the mux answers only at `/jwks`. The advertised URL
+404s, `fetch OIDC JWKS` fails, and because `loadUntilReady` retries indefinitely the gateway
+never becomes ready and never surfaces a clearer reason than a repeated fetch error.
+
+The implementation therefore derives both handler paths from the issuer URL's own path
+rather than mounting at the root, so the advertised URL and the served path are the same
+string by construction. A startup self-check that fetches its own discovery document and
+JWKS through the advertised URLs turns this class of misconfiguration into a fast failure
+at boot instead of a gateway that silently never becomes ready.
+
+@AnshulPatil2005 hit this while building #772 and reported it on this proposal; the fix
+there is the same one described here.
+
 ### Bootstrap ordering
 
 Serving discovery from sandbox-manager makes gateway readiness depend on sandbox-manager
@@ -399,3 +423,4 @@ needs its own proposal.
 - 2026-08-07: #734 merged, security tokens delivered over the resolved runtime transport
 - 2026-08-09: #772 opened as a draft signed JWT issuer
 - 2026-08-10: this proposal opened
+- 2026-08-10: path-mounting failure mode added, reported by @AnshulPatil2005 from #772
