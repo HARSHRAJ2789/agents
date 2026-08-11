@@ -68,9 +68,13 @@ var (
 // reason names the lifecycle event in the log line, so an operator reading a
 // sandbox's history can tell a pause from a recycle.
 //
-// The caller decides what a failure means. Recycle refuses to return the sandbox
-// to the pool; pause refuses to proceed to the checkpoint or the pod deletion,
-// because both of those are the point after which the credential is out of reach.
+// The caller decides what a failure means, and the three callers do not agree,
+// on purpose. Recycle refuses to return the sandbox to the pool and pause refuses
+// to proceed to the checkpoint or the pod deletion, because in both cases the
+// sandbox survives the event and a credential left behind survives with it.
+// Deletion is best effort: the object is going away, and a runtime that cannot be
+// reached is a worse reason to wedge a sandbox behind its finalizer than it is to
+// leave a file on a Pod that is being destroyed anyway.
 func removePropagatedCredential(ctx context.Context, box *agentsv1alpha1.Sandbox, reason string) error {
 	if !identity.IsIDTokenRequested(box) {
 		return nil
@@ -108,4 +112,5 @@ func removePropagatedCredential(ctx context.Context, box *agentsv1alpha1.Sandbox
 const (
 	credentialCleanupReasonRecycle = "recycle"
 	credentialCleanupReasonPause   = "pause"
+	credentialCleanupReasonDelete  = "delete"
 )
