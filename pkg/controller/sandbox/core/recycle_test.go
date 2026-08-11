@@ -2298,7 +2298,7 @@ func TestEnsureSecurityCredentialRemoved(t *testing.T) {
 			failTimes:    securityCredentialCleanupMaxRetries,
 			cleanupErr:   fmt.Errorf("runtime unreachable"),
 			wantCalls:    securityCredentialCleanupMaxRetries,
-			expectError:  "failed to remove propagated security credential after 3 attempts",
+			expectError:  "failed to remove propagated security credential before recycle after 3 attempts",
 		},
 		{
 			name:         "a cancelled context stops before the first attempt",
