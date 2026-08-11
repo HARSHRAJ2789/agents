@@ -54,6 +54,29 @@ var csiResetSignalRetryInterval = 1 * time.Second
 // so tests can stub the runtime file write without a live sandbox.
 var writeRuntimeFileFunc = agentsruntime.WriteFileWithRuntime
 
+const (
+	// securityCredentialCleanupMaxRetries is the number of attempts at removing the
+	// propagated security credential before the recycle fails. It matches
+	// csiResetSignalMaxRetries on purpose: both run in the same window, against the
+	// same runtime, and fail for the same transient reason.
+	securityCredentialCleanupMaxRetries = 3
+)
+
+// securityCredentialCleanupRetryInterval is the backoff between credential removal
+// attempts. It is a var rather than a const so tests can shorten it, matching
+// csiResetSignalRetryInterval.
+var securityCredentialCleanupRetryInterval = 1 * time.Second
+
+// cleanupSecurityTokenFunc and securityTokenCleanerCountFunc are package-level
+// seams over the identity cleaner registry so tests can drive credential removal
+// without a live sandbox, matching writeRuntimeFileFunc. The registry itself is
+// append-only by design, so the seams are the only way to exercise both the
+// community path (no cleaners) and a registered one from here.
+var (
+	cleanupSecurityTokenFunc      = identity.CleanupSecurityToken
+	securityTokenCleanerCountFunc = identity.SecurityTokenCleanerCount
+)
+
 // TODO for CRR based recycler
 type noopSandboxRecycler struct{}
 
@@ -138,6 +161,14 @@ func (r *SandboxRecycleControl) doRecycle(ctx context.Context, args EnsureFuncAr
 			return 0, err
 		}
 
+		// Remove the security credential this claim had propagated into the
+		// sandbox, for the same reason and in the same window: the runtime is
+		// still reachable, and the sandbox is about to be handed to the next
+		// claimer.
+		if err := r.ensureSecurityCredentialRemoved(ctx, box); err != nil {
+			return 0, err
+		}
+
 		if err := r.config.Recycler.Recycle(ctx, box, args.Pod); err != nil {
 			return 0, err
 		}
@@ -214,6 +245,63 @@ func (r *SandboxRecycleControl) ensureCSIResetSignal(ctx context.Context, box *a
 		}
 	}
 	return fmt.Errorf("failed to write csi reset signal to %s after %d attempts: %w", resetFile, csiResetSignalMaxRetries, lastErr)
+}
+
+// ensureSecurityCredentialRemoved deletes the security credential that the
+// identity provider propagated into the sandbox during claim, before the sandbox
+// is reset and returned to the pool.
+//
+// Three call sites deliver that credential (claim, clone, and post-resume
+// initialization, all through identity.ProcessSandboxToken) and none of them has
+// a counterpart on the way out. resetMetadataForPool then clears
+// identity.AgentKeyTokenRefreshStatus and the runtime annotations from the CR, so
+// after recycle the control plane no longer records that a credential was ever
+// written. Removing it here keeps the sandbox that goes back into the pool free of
+// the previous claimer's identity.
+//
+// It is a no-op when the sandbox never opted into an ID token, gating on
+// identity.IsIDTokenRequested exactly as the three issuance sites do, and a no-op
+// again when no cleaner is registered, which is the community default. Transient
+// failures are retried a few times inline; a credential that cannot be removed
+// fails the recycle rather than returning the sandbox to the pool with it still in
+// place, matching how ensureCSIResetSignal treats stale mounts.
+//
+// Like ensureCSIResetSignal it forwards no runtime.Option, so the call takes the
+// plaintext runtime path. That is the known gap the ExecuteLifecycleHook TODO
+// describes for the upgrade and recycle flows, and it should be closed for both
+// calls together once this package threads SandboxControlArgs.RuntimeTLSBundle
+// down here.
+func (r *SandboxRecycleControl) ensureSecurityCredentialRemoved(ctx context.Context, box *agentsv1alpha1.Sandbox) error {
+	if !identity.IsIDTokenRequested(box) {
+		return nil
+	}
+	if securityTokenCleanerCountFunc() == 0 {
+		return nil
+	}
+
+	var lastErr error
+	for attempt := 1; attempt <= securityCredentialCleanupMaxRetries; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		lastErr = cleanupSecurityTokenFunc(ctx, box)
+		if lastErr == nil {
+			klog.FromContext(ctx).Info("Removed propagated security credential for recycle",
+				"sandbox", klog.KObj(box), "attempt", attempt)
+			return nil
+		}
+		if attempt < securityCredentialCleanupMaxRetries {
+			klog.FromContext(ctx).Info("Failed to remove propagated security credential, will retry",
+				"sandbox", klog.KObj(box), "attempt", attempt, "error", lastErr)
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(securityCredentialCleanupRetryInterval):
+			}
+		}
+	}
+	return fmt.Errorf("failed to remove propagated security credential after %d attempts: %w",
+		securityCredentialCleanupMaxRetries, lastErr)
 }
 
 // validateRecyclePreconditions performs all pre-condition checks before the
