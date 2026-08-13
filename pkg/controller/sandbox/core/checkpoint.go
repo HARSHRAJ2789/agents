@@ -267,13 +267,21 @@ func (c *CheckpointControl) CleanupCheckpoints(ctx context.Context, box *agentsv
 		delCtx, delSpan := tracing.StartControllerSpan(ctx, tracing.SpanControllerDeleteCheckpoint)
 		delErr := c.Delete(delCtx, &cpList[i])
 		tracing.EndSpan(delCtx, delSpan, client.IgnoreNotFound(delErr))
-		if delErr != nil && !errors.IsNotFound(delErr) {
+		if delErr != nil {
+			// Settle the expectation here on any error, NotFound included. A
+			// checkpoint that is already gone produces no further delete event,
+			// so CheckpointEventHandler.Delete will never observe it and the
+			// expectation would block the Sandbox reconcile until it times out.
+			// The three other delete sites in the tree settle on any error for
+			// the same reason.
 			ScaleExpectation.ObserveScale(GetControllerKey(box), expectations.Delete, cpList[i].Name)
-			klog.FromContext(ctx).Error(delErr, "Failed to delete checkpoint after resume", "sandbox", klog.KObj(box), "checkpoint", cpList[i].Name)
-			err = delErr
-		} else {
-			klog.FromContext(ctx).Info("Deleted checkpoint after successful resume", "sandbox", klog.KObj(box), "checkpoint", cpList[i].Name)
+			if !errors.IsNotFound(delErr) {
+				klog.FromContext(ctx).Error(delErr, "Failed to delete checkpoint after resume", "sandbox", klog.KObj(box), "checkpoint", cpList[i].Name)
+				err = delErr
+				continue
+			}
 		}
+		klog.FromContext(ctx).Info("Deleted checkpoint after successful resume", "sandbox", klog.KObj(box), "checkpoint", cpList[i].Name)
 	}
 }
 
