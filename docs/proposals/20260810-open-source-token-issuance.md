@@ -137,7 +137,68 @@ the one decision that is expensive to reverse.
 
 The ID token carries `iss`, `sub`, `aud` and the standard time claims, and is not verified
 by the gateway. Its consumer is whatever external service the agent authenticates to, so
-its `aud` belongs to deployment configuration.
+its `aud` belongs to deployment configuration. The next section explains why that sentence
+is the one that has to be settled before item 2 of #659 can be written by anyone.
+
+## The `aud` Decision, and Why Item 2 Is Blocked On It
+
+Item 2 of #659 asks for an ID token carrying `iss`, `sub`, `aud`, `exp` and `iat`, "suitable
+for sandbox-to-external-service authentication". `aud` is the only one of those five that is
+currently claimed by two designs that mean different things by it, and the merged code reads
+none of them.
+
+**What the merged verifier does with `aud` today: nothing.** `pkg/identity/oidc` validates with
+
+```go
+claims.Claims.ValidateWithLeeway(jwt.Expected{Issuer: v.issuer, Time: time.Now()}, v.clockSkew)
+```
+
+`Expected` carries no `AnyAudience`, and go-jose checks the audience only when it does
+(`jwt/validation.go`: `if len(e.AnyAudience) != 0`). The string `aud` does not appear anywhere
+in `pkg/identity` outside tests. A token with any audience, or none at all, verifies
+identically. #772 is consistent with that: it populates `Issuer`, `Subject`, `IssuedAt`,
+`NotBefore` and `Expiry`, and leaves `Audience` unset, so the claim is omitted.
+
+**Three readings are in flight.**
+
+| Source | What `aud` names | Direction | Enforced where |
+|---|---|---|---|
+| #659 item 2 | the external service the agent calls | outbound | the external service |
+| #697 | the target sandbox, as a SPIFFE ID | inbound | envd, rejecting non-matching `aud` |
+| this document, above | deployment configuration | outbound | the external service |
+
+The first and third agree. The second is the opposite direction: it uses `aud` to name the
+sandbox as a resource server and rejects any token whose audience does not contain it.
+
+**Why the direction matters more than the wording.** `aud` identifies the party expected to
+*accept* a token. Under item 2 that party is outside the cluster and the sandbox is the
+presenter. Under #697 that party is the sandbox and the caller is the presenter. Those are not
+two conventions for one field; they are two fields sharing a name. Any code that validates
+`aud` without knowing which token kind it holds is wrong for one of them, and `TokenKind`
+already exists precisely to keep the two apart.
+
+**This proposal's position, offered so the question has a concrete answer to argue with.**
+
+1. **The ID token's `aud` is the external service**, per item 2, configured per deployment.
+   That is the reading the RFC 7519 definition supports and the only one an external
+   relying party can act on.
+2. **The traffic access token should not carry `aud` at all.** Sandbox scoping is already
+   done, by the `sandbox.sandboxId` and `sandbox.sandboxUid` claims that the merged verifier
+   binds to the route. #697's SPIFFE ID in `aud` duplicates a binding that exists and works,
+   and it does so in a field whose other user means the reverse.
+3. **If #697's ingress authorization needs a claim of its own**, a distinct name costs one
+   line and removes the ambiguity permanently. `sandbox` is already the precedent for a
+   namespaced claim in this codebase.
+
+**What is at stake if this is decided late.** Item 2 cannot be implemented without choosing,
+because the choice determines whether the ID token issuer takes an audience from configuration
+or derives it from the sandbox. Changing it afterwards is a breaking claim change for every
+external service already validating the token, which is the one class of change this design
+has no migration story for. The `sub` question raised earlier in this document has the same
+property, and the two should be settled together.
+
+I do not think this is mine to decide. It is written down here because item 2 is the last
+unimplemented part of #659's scope and this is the thing standing in front of it.
 
 ## Key Material and Rotation
 
