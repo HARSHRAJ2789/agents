@@ -280,6 +280,11 @@ func (c *CheckpointControl) CleanupCheckpoints(ctx context.Context, box *agentsv
 				err = delErr
 				continue
 			}
+			// Logged apart from the delete below: the expectation was settled but
+			// this call removed nothing, and a reader of these logs after the fact
+			// needs the two cases to stay distinguishable.
+			klog.FromContext(ctx).Info("Checkpoint already gone after resume, expectation settled", "sandbox", klog.KObj(box), "checkpoint", cpList[i].Name)
+			continue
 		}
 		klog.FromContext(ctx).Info("Deleted checkpoint after successful resume", "sandbox", klog.KObj(box), "checkpoint", cpList[i].Name)
 	}
