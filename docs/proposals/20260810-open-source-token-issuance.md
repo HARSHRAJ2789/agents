@@ -354,24 +354,76 @@ So the community propagator is registered through `RegisterSecurityTokenPropagat
 1. Writes the ID token to a credential path inside the sandbox using `Filesystem().Write`,
    forwarding `rtOpts` verbatim.
 2. Applies a restrictive mode with `Process().Chmod`, since `WriteFileArgs.Permissions`
-   does not travel in a header the runtime honours today.
+   does not travel in a header the runtime honours today. The section below states what
+   that costs and what removing the second call is waiting on.
 3. Runs again on refresh rather than only at claim. `refresher.go:87-97` already resolves
    the transport per refresh, before issuance, because the Pod IP and the advertised
    capability change across pause and resume.
 
-**Cleanup is the open half.** `Filesystem().Remove` exists but has no in-tree caller;
-`filesystem.go:471` is its only reference outside tests. Two options: tie the credential to
-the volume and pod lifecycle and do nothing explicit, or remove it on pause and delete so a
-paused sandbox's credential stops existing before it expires.
+**Cleanup is implemented, and it did not wait for hooks.** An earlier draft of this document
+left removal as an open half depending on #743, whose `prePause` and `preTerminate` hooks
+looked like the natural seam. #786 implements it directly instead, and the reason is worth
+stating because it decides where this belongs for anyone extending it.
 
-The second is stronger, and #743 is the seam it would use. That issue proposes `prePause`
-and `preTerminate` hooks with configurable timeout and failure policy, and it notes that the
-current pause path deletes the Pod with a hard-coded five-second grace period, which is the
-constraint that makes an unhooked cleanup unreliable today. @chacha923 has said there that
-they intend to implement it, so this proposal states the dependency and leaves the work
-where it is: if lifecycle hooks land, credential removal on `prePause` and `preTerminate` is the
-natural implementation; if they do not, cleanup falls back to volume and pod lifecycle and
-the shorter token lifetime carries the risk.
+The blocker named here was the hard-coded five-second grace period on the pause delete
+(`util.go:113`, `GracePeriodSeconds: 5`), which makes any cleanup racing pod termination
+unreliable. #786 removes the race: the call runs *before* the delete is
+issued, while the runtime is still reachable, so the grace period never applies. `prePause`
+would place it at the same point, which is why the hooks are useful for other work and are not
+a prerequisite for this one.
+
+Three lifecycle events end a credential's validity, and they disagree on failure on purpose.
+Recycle and pause stop, because the sandbox survives and a credential that outlives its claim
+is the failure this exists to prevent. Delete logs and continues, because wedging a sandbox
+behind its finalizer on a runtime that may never answer is worse than a file on a Pod being
+destroyed. That asymmetry is the design decision; a hook framework would still need it
+supplied.
+
+Removal is attempted three times with a one-second backoff, which bounds the latency this adds
+to a pause while absorbing a transient runtime failure. Beyond that the event's own policy
+applies.
+
+**What remains open** is the propagator itself, not the removal. Cleanup runs through a
+registered `SecurityTokenCleaner`, the community default registers none, and #787 supplies the
+file-based implementation. Until a cleaner is registered the call is inert by construction,
+which is the correct behaviour for a community deployment that never propagated anything.
+
+## The Credential File Mode, and What It Is Waiting On
+
+Step 2 above applies the mode with a second call. That is a workaround, and the pieces needed
+to remove it are already written and scattered across three places that do not reference each
+other.
+
+`WriteFileArgs` carries a `Permissions` field today. `filesystem.go:83-89` documents it as
+**not transmitted**, and says it "becomes effective without a call-site change once the runtime
+honors an explicit file-mode header". `process.go:209` calls `ChmodFileOnRuntime` "a temporary
+measure to enforce file permissions until the agent-runtime (envd) natively honors the
+X-File-Mode header". So the control plane already declares the workaround temporary and names
+the header that ends it.
+
+The client half exists. **#485** adds `HeaderFileMode = "X-File-Mode"` and sends the mode as a
+four-digit octal string on the multipart upload, in sixty-nine lines. It has been open since
+1 June with no review.
+
+The runtime half is absent from the design. **#669** specifies the agent-runtime's HTTP
+surface, and its `POST /files` row lists multipart and octet-stream bodies, gzip encoding,
+parent-directory creation, and ownership by resolved user. It does not mention mode. The
+`0600` and `0700` values elsewhere in that document are the helper socket and its directory.
+
+**What this costs, concretely.** A credential written without a mode lands at the runtime
+default, which `filesystem.go:84-85` gives as 0644 derived from umask. Between the write
+returning and the chmod landing it is readable by anything else in the sandbox. #787 bounds
+the failure by removing the file when the chmod fails, so a credential that could not be
+protected is not left behind. The window itself only closes from the runtime side.
+
+**The position this proposal takes.** The mode belongs on the write. `POST /files` already
+resolves a user and applies ownership, so applying a mode extends that path, and #485 shows the
+client change is small. Until that lands the two-call sequence
+stays, and it should stay documented as temporary in both places that currently say so.
+
+This is a sequencing question, not a disagreement. The client change, the control-plane
+comments, and the runtime specification are three artifacts that each assume one of the others
+has settled it.
 
 ## Integrating Keycloak and Dex
 
@@ -529,3 +581,6 @@ needs its own proposal.
 - 2026-08-09: #772 opened as a draft signed JWT issuer
 - 2026-08-10: this proposal opened
 - 2026-08-10: path-mounting failure mode added, reported by @AnshulPatil2005 from #772
+- 2026-08-13: the `aud` collision with #697 added, with the three readings of item 2
+- 2026-08-14: cleanup restated as implemented in #786; credential file mode added, tracing
+  #485 and #669 against the two control-plane comments that name `X-File-Mode`
