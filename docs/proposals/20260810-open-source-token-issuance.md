@@ -396,7 +396,7 @@ other.
 
 `WriteFileArgs` carries a `Permissions` field today. `filesystem.go:83-89` documents it as
 **not transmitted**, and says it "becomes effective without a call-site change once the runtime
-honors an explicit file-mode header". `process.go:209` calls `ChmodFileOnRuntime` "a temporary
+honors an explicit file-mode header". `process.go:208-209` calls `ChmodFileOnRuntime` "a temporary
 measure to enforce file permissions until the agent-runtime (envd) natively honors the
 X-File-Mode header". So the control plane already declares the workaround temporary and names
 the header that ends it.
@@ -430,7 +430,7 @@ has settled it.
 The seam is unchanged. A deployment pointing at Keycloak registers its own
 `IdentityProvider` through `RegisterProvider` during `init()` and sets
 `OIDC_DISCOVERY_URL` to the Keycloak realm. The gateway does not care which issuer it is
-talking to, only that discovery and JWKS satisfy the rules at `verifier.go:260-300`.
+talking to, only that discovery and JWKS satisfy the rules at `verifier.go:257-295`.
 
 What this proposal adds for those users is not a Keycloak client. It is the guarantee that
 the claim shape, the rotation procedure and the propagation path are documented and
@@ -461,15 +461,15 @@ correction matters more than the issuance design it sits next to.
 The gateway filter config carries process-wide `EnableAuth` and `EnableJWTAuth` flags,
 with `Validate()` requiring `EnableAuth` whenever `EnableJWTAuth` is set
 (`filter/config.go:58-62`, `:82`). Separately, each route carries `RequireTrafficAuth`,
-derived per sandbox from the annotation (`proxyutils/route.go:41`). `authenticate()`
-(`filter/filter.go:141-160`) combines them:
+derived per sandbox from the annotation (`sandboxroute/route.go:115`, field at `:43`). `authenticate()`
+(`filter/filter.go:157-187`) combines them:
 
 | Gateway `EnableJWTAuth` | Sandbox annotation | Behaviour |
 |---|---|---|
 | off | off | UUID constant-time compare, when `EnableAuth` is set and the route has a token |
-| off | **on** | **503** `jwt_verifier_not_ready` (`filter.go:143-144`) |
+| off | **on** | **503** `jwt_verifier_not_ready` (`filter.go:159-160`, reply built at `:226-236`) |
 | on | on | JWT verification |
-| on | **off** | **Traffic token header deleted, `Continue` returned** (`filter.go:148-151`) |
+| on | **off** | **Traffic token header deleted, `Continue` returned** (`filter.go:164-167`) |
 
 The two mixed states are the problem, in opposite directions.
 
@@ -479,7 +479,7 @@ the route now requires traffic auth, the gateway has no verifier, and every requ
 
 Flipping the gateway before annotating is worse, because it fails open rather than closed.
 A route without `RequireTrafficAuth` never reaches the constant-time compare at
-`filter.go:159`. Its traffic token header is stripped and the request continues
+`filter.go:175`. Its traffic token header is stripped and the request continues
 unauthenticated. Sandboxes that were UUID-authenticated a moment earlier are not
 authenticated at all, and nothing in the request path logs it.
 
