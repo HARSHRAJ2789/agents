@@ -253,13 +253,14 @@ func (c *CheckpointControl) CleanupCheckpoints(ctx context.Context, box *agentsv
 	// evaluate err while still nil and record every failure as success. The
 	// deletion failures below are best-effort and only recorded on the span so
 	// they stay visible in traces.
+	log := klog.FromContext(ctx).WithValues("sandbox", klog.KObj(box))
 	ctx, span := tracing.StartControllerSpan(ctx, tracing.SpanControllerCheckpointCleanup)
 	var err error
 	defer func() { tracing.EndSpan(ctx, span, err) }()
 	cpList, cpErr := listCheckpointsForSandbox(ctx, c.Client, box, "")
 	if cpErr != nil {
 		err = cpErr
-		klog.FromContext(ctx).Error(cpErr, "Failed to list checkpoints for cleanup", "sandbox", klog.KObj(box))
+		log.Error(cpErr, "Failed to list checkpoints for cleanup")
 		return
 	}
 	for i := range cpList {
@@ -276,17 +277,17 @@ func (c *CheckpointControl) CleanupCheckpoints(ctx context.Context, box *agentsv
 			// the same reason.
 			ScaleExpectation.ObserveScale(GetControllerKey(box), expectations.Delete, cpList[i].Name)
 			if !errors.IsNotFound(delErr) {
-				klog.FromContext(ctx).Error(delErr, "Failed to delete checkpoint after resume", "sandbox", klog.KObj(box), "checkpoint", cpList[i].Name)
+				log.Error(delErr, "Failed to delete checkpoint after resume", "checkpoint", cpList[i].Name)
 				err = delErr
 				continue
 			}
 			// Logged apart from the delete below: the expectation was settled but
 			// this call removed nothing, and a reader of these logs after the fact
 			// needs the two cases to stay distinguishable.
-			klog.FromContext(ctx).Info("Checkpoint already gone after resume, expectation settled", "sandbox", klog.KObj(box), "checkpoint", cpList[i].Name)
+			log.Info("Checkpoint already gone after resume, expectation settled", "checkpoint", cpList[i].Name)
 			continue
 		}
-		klog.FromContext(ctx).Info("Deleted checkpoint after successful resume", "sandbox", klog.KObj(box), "checkpoint", cpList[i].Name)
+		log.Info("Deleted checkpoint after successful resume", "checkpoint", cpList[i].Name)
 	}
 }
 
